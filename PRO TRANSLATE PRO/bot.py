@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram Translation Bot - Automatic Translation
-Detects English messages automatically and translates to Spanish
+Telegram Translation Bot - Auto Translation with Twitter Threads
 """
 
 import asyncio
@@ -130,12 +129,51 @@ def split_long_message(text: str, max_length: int = 4000) -> List[str]:
     
     return chunks
 
+def split_twitter_thread(text: str, max_length: int = 270) -> List[str]:
+    """Split text into Twitter thread chunks with smart breaks"""
+    if len(text) <= max_length:
+        return [text]
+    
+    chunks = []
+    current_chunk = ""
+    
+    # Split by sentences for better readability
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    
+    for sentence in sentences:
+        # Check if adding this sentence would exceed limit
+        if len(current_chunk + " " + sentence) > max_length:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = sentence
+            else:
+                # Single sentence too long, split by meaningful breaks
+                words = sentence.split()
+                temp_chunk = ""
+                for word in words:
+                    if len(temp_chunk + " " + word) <= max_length:
+                        temp_chunk += " " + word if temp_chunk else word
+                    else:
+                        if temp_chunk:
+                            chunks.append(temp_chunk.strip())
+                            temp_chunk = word
+                        else:
+                            # Force split word if too long
+                            chunks.append(word[:max_length])
+                            temp_chunk = word[max_length:]
+                current_chunk = temp_chunk
+        else:
+            current_chunk += " " + sentence if current_chunk else sentence
+    
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    
+    return chunks
+
 def clean_text(text: str) -> str:
     """Clean text for better translation"""
     # Remove excessive whitespace
     text = re.sub(r'\s+', ' ', text)
-    # Remove special characters that might interfere
-    text = re.sub(r'[^\w\s.,!?;:()\-\'"]', '', text)
     return text.strip()
 
 class TranslationBot:
@@ -171,20 +209,23 @@ class TranslationBot:
             raise
 
     async def translate_text(self, text: str, target_lang: str = "es") -> Optional[str]:
-        """Translate text using OpenAI GPT-4"""
+        """Translate text using OpenAI GPT-4 with subtle emoji enhancement"""
         try:
             clean_input = clean_text(text)
 
             prompt = f"""Translate the following English text to Spanish. 
             Make it engaging and natural, not just literal translation.
             Add some personality while keeping the original meaning.
+            Add subtle emojis ONLY where they make sense and enhance the message.
+            Don't add extra words or change the core message.
+            Keep it professional but with a touch of flair.
 
             Text to translate: {clean_input}"""
 
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "You are an expert translator who creates engaging, culturally-aware Spanish translations."},
+                    {"role": "system", "content": "You are an expert translator who creates engaging, culturally-aware Spanish translations with subtle emoji enhancements."},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=1000,
@@ -199,51 +240,81 @@ class TranslationBot:
             logger.error(f"❌ Translation error: {e}")
             return None
 
-    async def post_to_twitter(self, text: str) -> bool:
-        """Post translated text to Twitter using v2 API"""
+    async def post_to_twitter(self, text: str) -> dict:
+        """Post to Twitter as single tweet or thread"""
+        result = {"success": False, "tweets": 0, "thread": False, "error": None}
+        
         if not self.twitter_client or not self.settings.ENABLE_TWITTER_SHARING:
-            return False
+            result["error"] = "Twitter disabled"
+            return result
 
         try:
-            timestamp = datetime.now().strftime("%H:%M")
-            tweet_text = f"🌐 Auto-Translation ({timestamp})\n\n{text}"
-
-            if len(tweet_text) > 280:
-                tweet_text = tweet_text[:275] + "..."
-
-            response = self.twitter_client.create_tweet(text=tweet_text)
-            logger.info(f"✅ Posted to Twitter: {response.data['id']}")
-            return True
+            # Check if we need a thread
+            if len(text) <= 270:
+                # Single tweet
+                response = self.twitter_client.create_tweet(text=text)
+                result["success"] = True
+                result["tweets"] = 1
+                result["thread"] = False
+                logger.info(f"✅ Posted single tweet: {response.data['id']}")
+            else:
+                # Twitter thread
+                chunks = split_twitter_thread(text, 270)
+                tweet_ids = []
+                
+                # Post first tweet
+                first_response = self.twitter_client.create_tweet(text=f"{chunks[0]} 🧵")
+                tweet_ids.append(first_response.data['id'])
+                
+                # Post remaining tweets as replies
+                for i, chunk in enumerate(chunks[1:], 2):
+                    response = self.twitter_client.create_tweet(
+                        text=f"{chunk}",
+                        in_reply_to_tweet_id=tweet_ids[-1]
+                    )
+                    tweet_ids.append(response.data['id'])
+                
+                result["success"] = True
+                result["tweets"] = len(chunks)
+                result["thread"] = True
+                logger.info(f"✅ Posted Twitter thread: {len(chunks)} tweets")
+            
+            return result
 
         except Exception as e:
             logger.error(f"❌ Twitter posting error: {e}")
-            return False
+            result["error"] = str(e)
+            return result
 
-    async def post_to_telegram(self, bot: Bot, text: str, original_text: str = None) -> bool:
+    async def post_to_telegram(self, bot: Bot, text: str) -> dict:
         """Post translation to Telegram group"""
+        result = {"success": False, "messages": 0, "error": None}
+        
         try:
-            if original_text:
-                message = f"🌐 **Auto-Translation**\n\n"
-                message += f"**Original (EN):** {original_text[:100]}{'...' if len(original_text) > 100 else ''}\n\n"
-                message += f"**Spanish:** {text}"
-            else:
-                message = f"🌐 **Translation**\n\n{text}"
+            message_chunks = split_long_message(text, 4000)
 
-            message_chunks = split_long_message(message, 4000)
-
-            for chunk in message_chunks:
+            for i, chunk in enumerate(message_chunks):
+                if len(message_chunks) > 1:
+                    # Add part indicator for multiple messages
+                    formatted_chunk = f"📝 Parte {i+1}/{len(message_chunks)}:\n\n{chunk}"
+                else:
+                    formatted_chunk = chunk
+                
                 await bot.send_message(
                     chat_id=self.settings.TELEGRAM_GROUP_ID,
-                    text=chunk,
-                    parse_mode=ParseMode.MARKDOWN
+                    text=formatted_chunk,
+                    parse_mode=None  # No markdown to avoid formatting issues
                 )
 
+            result["success"] = True
+            result["messages"] = len(message_chunks)
             logger.info(f"✅ Posted to Telegram group: {len(message_chunks)} messages")
-            return True
+            return result
 
         except Exception as e:
             logger.error(f"❌ Telegram posting error: {e}")
-            return False
+            result["error"] = str(e)
+            return result
 
 # Bot Command Handlers
 translation_bot = TranslationBot()
@@ -286,8 +357,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 **Features:**
 • ✅ Auto language detection
 • ✅ GPT-4 powered translation
+• ✅ Twitter threads for long messages
 • ✅ Confirmation before sharing
-• ✅ Twitter & Telegram integration
+• ✅ Detailed posting confirmations
 
 **Just send English text and I'll handle the rest! 🚀**
     """
@@ -324,7 +396,6 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text in ['SÍ', 'SI', 'YES', 'Y']:
         # Obtener traducción guardada
         translation = context.user_data.get('pending_translation')
-        original = context.user_data.get('original_text')
         
         if not translation:
             await update.message.reply_text("❌ No hay traducción pendiente.")
@@ -333,17 +404,31 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         processing_msg = await update.message.reply_text("📤 Compartiendo...")
         
         # Postear en ambas plataformas
-        twitter_success = await translation_bot.post_to_twitter(translation)
-        telegram_success = await translation_bot.post_to_telegram(context.bot, translation, original)
+        twitter_result = await translation_bot.post_to_twitter(translation)
+        telegram_result = await translation_bot.post_to_telegram(context.bot, translation)
         
-        # Confirmar resultado
-        feedback = "✅ **¡Compartido exitosamente!**\n\n"
-        if twitter_success:
-            feedback += "🐦 Posted to Twitter\n"
-        if telegram_success:
-            feedback += "📱 Posted to Telegram group\n"
+        # Crear mensaje de confirmación detallado
+        confirmation_parts = []
         
-        await processing_msg.edit_text(feedback, parse_mode=ParseMode.MARKDOWN)
+        if twitter_result["success"]:
+            if twitter_result["thread"]:
+                confirmation_parts.append(f"🐦 **Twitter:** Publicado como hilo ({twitter_result['tweets']} tweets)")
+            else:
+                confirmation_parts.append(f"🐦 **Twitter:** Publicado como tweet único")
+        else:
+            confirmation_parts.append(f"❌ **Twitter:** Error - {twitter_result.get('error', 'Unknown')}")
+        
+        if telegram_result["success"]:
+            if telegram_result["messages"] > 1:
+                confirmation_parts.append(f"📱 **Telegram:** Enviado en {telegram_result['messages']} mensajes")
+            else:
+                confirmation_parts.append(f"📱 **Telegram:** Mensaje enviado correctamente")
+        else:
+            confirmation_parts.append(f"❌ **Telegram:** Error - {telegram_result.get('error', 'Unknown')}")
+        
+        final_message = "✅ **Resultados:**\n\n" + "\n".join(confirmation_parts)
+        
+        await processing_msg.edit_text(final_message, parse_mode=ParseMode.MARKDOWN)
         
         # Limpiar datos guardados
         context.user_data.clear()
@@ -387,10 +472,9 @@ async def handle_auto_translation(update: Update, context: ContextTypes.DEFAULT_
         if translation:
             # Store for later use
             context.user_data['pending_translation'] = translation
-            context.user_data['original_text'] = text
             
-            # Show ONLY translation + confirmation question
-            response = f"🇪🇸 **Traducción:**\n\n{translation}\n\n¿Estás listo para compartir? Responde **SÍ** o **NO**"
+            # Show ONLY the translation + confirmation question
+            response = f"{translation}\n\n¿Estás listo para compartir? Responde **SÍ** o **NO**"
             
             await processing_msg.edit_text(response, parse_mode=ParseMode.MARKDOWN)
         else:
