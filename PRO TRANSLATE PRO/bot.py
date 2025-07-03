@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram Translation Bot - Complete Version with Inline Buttons
+Telegram Translation Bot - Complete Version with Inline Buttons & Debug
 Auto-translates English to Spanish and posts to Twitter + Telegram group
 """
 
@@ -51,6 +51,8 @@ class Settings:
         # Twitter Configuration
         self.TWITTER_API_KEY = os.getenv('TWITTER_API_KEY')
         self.TWITTER_API_SECRET = os.getenv('TWITTER_API_SECRET')
+        self.TWITTER_ACCESS_TOKEN = os.getenv('TWITTER_ACCESS_TOKEN')
+        self.TWITTER_ACCESS_TOKEN_SECRET = os.getenv('TWITTER_ACCESS_TOKEN_SECRET')
         
         # Bot Configuration
         self.ENABLE_TWITTER_SHARING = os.getenv('ENABLE_TWITTER_SHARING', 'true').lower() == 'true'
@@ -61,6 +63,7 @@ class Settings:
         logger.info(f"   Telegram Group ID: {self.TELEGRAM_GROUP_ID}")
         logger.info(f"   OpenAI API Key: {'✅ Set' if self.OPENAI_API_KEY else '❌ Missing'}")
         logger.info(f"   Twitter API Key: {'✅ Set' if self.TWITTER_API_KEY else '❌ Missing'}")
+        logger.info(f"   Twitter Access Token: {'✅ Set' if self.TWITTER_ACCESS_TOKEN else '❌ Missing'}")
         logger.info(f"   Twitter Sharing: {'✅ Enabled' if self.ENABLE_TWITTER_SHARING else '❌ Disabled'}")
         
         # Validate required settings
@@ -203,27 +206,49 @@ class TranslationBot:
             self.openai_client = openai.OpenAI(api_key=self.settings.OPENAI_API_KEY)
             logger.info("✅ OpenAI API initialized")
 
-            # Setup Twitter API v2 with verbose logging
-            if self.settings.ENABLE_TWITTER_SHARING and self.settings.TWITTER_API_KEY and self.settings.TWITTER_API_SECRET:
+            # Setup Twitter API v1.1 with OAuth 1.0a (for posting tweets)
+            if (self.settings.ENABLE_TWITTER_SHARING and 
+                self.settings.TWITTER_API_KEY and 
+                self.settings.TWITTER_API_SECRET and
+                self.settings.TWITTER_ACCESS_TOKEN and 
+                self.settings.TWITTER_ACCESS_TOKEN_SECRET):
                 try:
+                    # Use OAuth 1.0a for posting tweets
+                    auth = tweepy.OAuthHandler(
+                        self.settings.TWITTER_API_KEY,
+                        self.settings.TWITTER_API_SECRET
+                    )
+                    auth.set_access_token(
+                        self.settings.TWITTER_ACCESS_TOKEN,
+                        self.settings.TWITTER_ACCESS_TOKEN_SECRET
+                    )
+                    
+                    self.twitter_api = tweepy.API(auth, wait_on_rate_limit=True)
+                    
+                    # Also setup v2 client for thread functionality
                     self.twitter_client = tweepy.Client(
                         consumer_key=self.settings.TWITTER_API_KEY,
                         consumer_secret=self.settings.TWITTER_API_SECRET,
+                        access_token=self.settings.TWITTER_ACCESS_TOKEN,
+                        access_token_secret=self.settings.TWITTER_ACCESS_TOKEN_SECRET,
                         wait_on_rate_limit=True
                     )
-                    logger.info("✅ Twitter API v2 initialized successfully")
+                    
+                    logger.info("✅ Twitter API (v1.1 + v2) initialized successfully")
                     
                     # Test Twitter connection
                     try:
-                        me = self.twitter_client.get_me()
-                        logger.info(f"✅ Twitter connection verified - User: {me.data.username}")
+                        me = self.twitter_api.verify_credentials()
+                        logger.info(f"✅ Twitter connection verified - User: @{me.screen_name}")
                     except Exception as e:
                         logger.error(f"⚠️ Twitter connection test failed: {e}")
                         
                 except Exception as e:
                     logger.error(f"❌ Twitter API setup failed: {e}")
+                    self.twitter_api = None
                     self.twitter_client = None
             else:
+                self.twitter_api = None
                 self.twitter_client = None
                 logger.info("ℹ️ Twitter sharing disabled (missing credentials or disabled)")
 
@@ -271,7 +296,7 @@ class TranslationBot:
         
         logger.info(f"🐦 Attempting to post to Twitter: {text[:50]}...")
         
-        if not self.twitter_client:
+        if not self.twitter_api or not self.twitter_client:
             result["error"] = "Twitter client not initialized"
             logger.error("❌ Twitter client not available")
             return result
@@ -284,15 +309,15 @@ class TranslationBot:
         try:
             # Check if we need a thread
             if len(text) <= 270:
-                # Single tweet
+                # Single tweet using v1.1 API
                 logger.info("📤 Posting single tweet...")
-                response = self.twitter_client.create_tweet(text=text)
+                tweet = self.twitter_api.update_status(text)
                 result["success"] = True
                 result["tweets"] = 1
                 result["thread"] = False
-                logger.info(f"✅ Posted single tweet successfully: {response.data['id']}")
+                logger.info(f"✅ Posted single tweet successfully: {tweet.id}")
             else:
-                # Twitter thread
+                # Twitter thread using v2 API
                 logger.info("📤 Posting Twitter thread...")
                 chunks = split_twitter_thread(text, 270)
                 tweet_ids = []
@@ -383,6 +408,7 @@ I automatically detect English messages and translate them to Spanish.
 • `/start` - Show this welcome message
 • `/help` - Get help
 • `/status` - Check bot status
+• `/getid` - Get current chat ID (for groups)
 
 Ready to translate! Just send me English text! 🌐
     """
@@ -409,6 +435,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • ✅ Images with captions support
 • ✅ Inline buttons for easy confirmation
 
+**Debug Commands:**
+• `/getid` - Get chat ID (useful for group setup)
+
 **Just send English text and I'll handle the rest! 🚀**
     """
 
@@ -421,7 +450,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **APIs:**
 • OpenAI: {'✅ Connected' if translation_bot.openai_client else '❌ Error'}
-• Twitter: {'✅ Connected' if translation_bot.twitter_client else '❌ Disabled/Error'}
+• Twitter: {'✅ Connected' if translation_bot.twitter_api else '❌ Disabled/Error'}
 
 **Settings:**
 • Auto-detect: ✅ Enabled
@@ -437,6 +466,36 @@ Ready to translate! 🌐
     """
 
     await update.message.reply_text(status_message, parse_mode=ParseMode.MARKDOWN)
+
+async def getid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Get chat ID for debugging"""
+    chat_id = update.effective_chat.id
+    chat_type = update.effective_chat.type
+    chat_title = getattr(update.effective_chat, 'title', 'No title')
+    user_name = update.effective_user.first_name
+    
+    info = f"""
+🔍 **Chat Info Debug**
+
+**Chat Details:**
+• **ID:** `{chat_id}`
+• **Type:** {chat_type}
+• **Title:** {chat_title}
+
+**User Details:**
+• **Name:** {user_name}
+• **User ID:** {update.effective_user.id}
+
+**Instructions:**
+If this is a GROUP and you want the bot to post here:
+1. Copy the Chat ID: `{chat_id}`
+2. Go to Heroku → Settings → Config Vars
+3. Update TELEGRAM_GROUP_ID with this value: `{chat_id}`
+4. The bot will then post translations to this chat!
+
+**Note:** Group IDs are usually negative numbers.
+    """
+    await update.message.reply_text(info, parse_mode=ParseMode.MARKDOWN)
 
 async def handle_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks for confirmation"""
@@ -603,8 +662,9 @@ def main():
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("status", status_command))
+        application.add_handler(CommandHandler("getid", getid_command))
         
-        # BUTTON CALLBACK HANDLER (NEW!)
+        # BUTTON CALLBACK HANDLER
         application.add_handler(CallbackQueryHandler(handle_button_callback))
         
         # AUTO-TRANSLATION HANDLER
