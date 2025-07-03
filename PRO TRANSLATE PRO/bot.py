@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Telegram Translation Bot - Standalone Version
-Detects English messages, translates to Spanish, and posts to Twitter/Telegram
+Telegram Translation Bot - Automatic Translation
+Detects English messages automatically and translates to Spanish
 """
 
 import asyncio
@@ -245,76 +245,28 @@ class TranslationBot:
             logger.error(f"❌ Telegram posting error: {e}")
             return False
 
-    async def process_message(self, text: str, bot: Bot) -> dict:
-        """Process a message: detect language, translate, and post"""
-        results = {
-            'detected_language': None,
-            'translation': None,
-            'twitter_posted': False,
-            'telegram_posted': False,
-            'error': None
-        }
-
-        try:
-            # Detect language
-            detected_lang = detect_language(text)
-            results['detected_language'] = detected_lang
-
-            # Only process English messages
-            if detected_lang != 'en':
-                results['error'] = f"Not English (detected: {detected_lang})"
-                return results
-
-            logger.info(f"🔍 Processing English message: {text[:50]}...")
-
-            # Translate to Spanish
-            translation = await self.translate_text(text, 'es')
-            if not translation:
-                results['error'] = "Translation failed"
-                return results
-
-            results['translation'] = translation
-
-            # Post to Twitter
-            if self.settings.ENABLE_TWITTER_SHARING:
-                twitter_success = await self.post_to_twitter(translation)
-                results['twitter_posted'] = twitter_success
-
-            # Post to Telegram group
-            telegram_success = await self.post_to_telegram(bot, translation, text)
-            results['telegram_posted'] = telegram_success
-
-            logger.info(f"✅ Message processed successfully")
-            return results
-
-        except Exception as e:
-            logger.error(f"❌ Message processing error: {e}")
-            results['error'] = str(e)
-            return results
-
 # Bot Command Handlers
 translation_bot = TranslationBot()
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
     welcome_message = """
-🤖 **Welcome to Translation Bot!**
+🤖 **Welcome to Auto Translation Bot!**
 
 I automatically detect English messages and translate them to Spanish.
 
+**How it works:**
+• Send any English text (no commands needed!)
+• I'll translate it automatically
+• Then ask if you want to share it
+• Respond "SÍ" to post on Twitter & Telegram group
+
 **Commands:**
 • `/start` - Show this welcome message
-• `/help` - Get help and usage info
-• `/translate <text>` - Translate text to Spanish
-• `/detect <text>` - Detect language of text
+• `/help` - Get help
 • `/status` - Check bot status
 
-**Auto-Translation:**
-• I monitor messages for English text
-• Automatically translate to Spanish
-• Post to Twitter and Telegram group
-
-Ready to translate! 🌐
+Ready to translate! Just send me English text! 🌐
     """
 
     await update.message.reply_text(welcome_message, parse_mode=ParseMode.MARKDOWN)
@@ -322,74 +274,25 @@ Ready to translate! 🌐
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command"""
     help_message = """
-🆘 **Translation Bot Help**
+🆘 **Auto Translation Bot Help**
 
 **How it works:**
-1. Send any English text
-2. Bot detects the language
-3. Translates to Spanish using GPT-4
-4. Posts to Twitter and Telegram group
-
-**Manual Commands:**
-• `/translate <text>` - Force translate text
-• `/detect <text>` - Check language detection
-• `/status` - Bot health check
+1. Send ANY English text (no commands!)
+2. Bot auto-detects and translates to Spanish
+3. Bot asks: "¿Compartir?"
+4. Reply "SÍ" → Posts to Twitter & Telegram group
+5. Reply "NO" → Cancels sharing
 
 **Features:**
 • ✅ Auto language detection
 • ✅ GPT-4 powered translation
-• ✅ Twitter integration
-• ✅ Smart message splitting
-• ✅ Error handling
+• ✅ Confirmation before sharing
+• ✅ Twitter & Telegram integration
 
-Ready to translate! 🚀
+**Just send English text and I'll handle the rest! 🚀**
     """
 
     await update.message.reply_text(help_message, parse_mode=ParseMode.MARKDOWN)
-
-async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /translate command"""
-    if not context.args:
-        await update.message.reply_text("❌ Please provide text to translate.\nUsage: `/translate Hello world`", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    text = ' '.join(context.args)
-    processing_msg = await update.message.reply_text("🔄 Translating...")
-
-    try:
-        translation = await translation_bot.translate_text(text, 'es')
-
-        if translation:
-            response = f"🌐 **Translation**\n\n**Original (EN):** {text}\n\n**Spanish:** {translation}"
-            await processing_msg.edit_text(response, parse_mode=ParseMode.MARKDOWN)
-        else:
-            await processing_msg.edit_text("❌ Translation failed. Please try again.")
-
-    except Exception as e:
-        logger.error(f"Translation command error: {e}")
-        await processing_msg.edit_text("❌ An error occurred during translation.")
-
-async def detect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /detect command"""
-    if not context.args:
-        await update.message.reply_text("❌ Please provide text to detect.\nUsage: `/detect Hello world`", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    text = ' '.join(context.args)
-    detected_lang = detect_language(text)
-
-    if detected_lang:
-        lang_names = {
-            'en': 'English', 'es': 'Spanish', 'fr': 'French', 
-            'de': 'German', 'it': 'Italian', 'pt': 'Portuguese'
-        }
-        lang_name = lang_names.get(detected_lang, detected_lang.upper())
-
-        response = f"🔍 **Language Detection**\n\n**Text:** {text}\n**Detected:** {lang_name} ({detected_lang})"
-    else:
-        response = f"❌ Could not detect language for: {text}"
-
-    await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /status command"""
@@ -414,36 +317,87 @@ Ready to translate! 🌐
 
     await update.message.reply_text(status_message, parse_mode=ParseMode.MARKDOWN)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming messages for auto-translation"""
+async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle YES/NO confirmation for sharing"""
+    text = update.message.text.strip().upper()
+    
+    if text in ['SÍ', 'SI', 'YES', 'Y']:
+        # Obtener traducción guardada
+        translation = context.user_data.get('pending_translation')
+        original = context.user_data.get('original_text')
+        
+        if not translation:
+            await update.message.reply_text("❌ No hay traducción pendiente.")
+            return
+        
+        processing_msg = await update.message.reply_text("📤 Compartiendo...")
+        
+        # Postear en ambas plataformas
+        twitter_success = await translation_bot.post_to_twitter(translation)
+        telegram_success = await translation_bot.post_to_telegram(context.bot, translation, original)
+        
+        # Confirmar resultado
+        feedback = "✅ **¡Compartido exitosamente!**\n\n"
+        if twitter_success:
+            feedback += "🐦 Posted to Twitter\n"
+        if telegram_success:
+            feedback += "📱 Posted to Telegram group\n"
+        
+        await processing_msg.edit_text(feedback, parse_mode=ParseMode.MARKDOWN)
+        
+        # Limpiar datos guardados
+        context.user_data.clear()
+        
+    elif text in ['NO', 'N']:
+        await update.message.reply_text("❌ Compartición cancelada.")
+        context.user_data.clear()
+
+async def handle_auto_translation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle automatic translation of English messages"""
     if not update.message or not update.message.text:
         return
 
     text = update.message.text.strip()
 
-    # Skip commands and short messages
+    # Skip commands and very short messages
     if text.startswith('/') or len(text) < 10:
         return
 
+    # Skip if user is responding to confirmation
+    if text.upper() in ['SÍ', 'SI', 'YES', 'Y', 'NO', 'N']:
+        await handle_confirmation(update, context)
+        return
+
     try:
-        results = await translation_bot.process_message(text, context.bot)
-
-        if results['error']:
-            if 'Not English' in results['error']:
-                return  # Silent skip
-            else:
-                await update.message.reply_text(f"❌ {results['error']}")
-        elif results['translation']:
-            feedback = "✅ **Translation completed!**\n\n"
-            if results['twitter_posted']:
-                feedback += "🐦 Posted to Twitter\n"
-            if results['telegram_posted']:
-                feedback += "📱 Posted to Telegram group\n"
-
-            await update.message.reply_text(feedback, parse_mode=ParseMode.MARKDOWN)
+        # Detect language
+        detected_lang = detect_language(text)
+        
+        # Only process English messages
+        if detected_lang != 'en':
+            return  # Silent skip for non-English
+        
+        logger.info(f"🔍 Auto-translating English message: {text[:50]}...")
+        
+        # Show processing message
+        processing_msg = await update.message.reply_text("🔄 Traduciendo automáticamente...")
+        
+        # Translate to Spanish
+        translation = await translation_bot.translate_text(text, 'es')
+        
+        if translation:
+            # Store for later use
+            context.user_data['pending_translation'] = translation
+            context.user_data['original_text'] = text
+            
+            # Show ONLY translation + confirmation question
+            response = f"🇪🇸 **Traducción:**\n\n{translation}\n\n¿Estás listo para compartir? Responde **SÍ** o **NO**"
+            
+            await processing_msg.edit_text(response, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await processing_msg.edit_text("❌ Error en la traducción.")
 
     except Exception as e:
-        logger.error(f"Message handling error: {e}")
+        logger.error(f"Auto-translation error: {e}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle errors"""
@@ -457,17 +411,18 @@ def main():
         # Add handlers
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("translate", translate_command))
-        application.add_handler(CommandHandler("detect", detect_command))
         application.add_handler(CommandHandler("status", status_command))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # AUTO-TRANSLATION HANDLER (no commands needed!)
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_auto_translation))
+        
         application.add_error_handler(error_handler)
 
         # Start bot
-        logger.info("🚀 Starting Telegram Translation Bot...")
+        logger.info("🚀 Starting Auto Translation Bot...")
         logger.info(f"🔑 Bot Token: {translation_bot.settings.TELEGRAM_BOT_TOKEN[:10]}...")
         logger.info(f"📱 Group ID: {translation_bot.settings.TELEGRAM_GROUP_ID}")
-        logger.info(f"🌐 Target Language: Spanish")
+        logger.info(f"🌐 Auto-translation: English → Spanish")
         logger.info(f"🐦 Twitter: {'Enabled' if translation_bot.settings.ENABLE_TWITTER_SHARING else 'Disabled'}")
 
         application.run_polling(drop_pending_updates=True)
