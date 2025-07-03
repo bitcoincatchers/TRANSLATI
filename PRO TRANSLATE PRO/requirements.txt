@@ -5,15 +5,3 @@ langdetect==1.0.9
 tweepy==4.14.0
 requests==2.31.0
 aiohttp==3.9.1
-asyncio==3.4.3
-logging==0.4.9.6
-python-dateutil==2.8.2
-pytz==2023.3
-sqlalchemy==2.0.23
-alembic==1.13.1
-redis==5.0.1
-psycopg2-binary==2.9.9
-gunicorn==21.2.0
-uvicorn==0.24.0
-fastapi==0.104.1
-pydantic==2.5.0
