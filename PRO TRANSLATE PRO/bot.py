@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
+Copy#!/usr/bin/env python3
 """
-Telegram Translation Bot - Fixed Version
+Telegram Translation Bot - Complete Version with Inline Buttons
 Auto-translates English to Spanish and posts to Twitter + Telegram group
 """
 
@@ -14,8 +14,8 @@ from typing import Optional, List
 
 import openai
 import tweepy
-from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.constants import ParseMode
 from dotenv import load_dotenv
 from langdetect import detect
@@ -376,8 +376,8 @@ I automatically detect English messages and translate them to Spanish.
 **How it works:**
 • Send any English text (no commands needed!)
 • I'll translate it automatically
-• Then ask if you want to share it
-• Respond "SÍ" to post on Twitter & Telegram group
+• Then ask if you want to share it with buttons
+• Click "✅ SÍ" to post on Twitter & Telegram group
 
 **Commands:**
 • `/start` - Show this welcome message
@@ -397,9 +397,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 **How it works:**
 1. Send ANY English text (no commands!)
 2. Bot auto-detects and translates to Spanish
-3. Bot asks: "¿Compartir?"
-4. Reply "SÍ" → Posts to Twitter & Telegram group
-5. Reply "NO" → Cancels sharing
+3. Bot shows translation with buttons
+4. Click "✅ SÍ" → Posts to Twitter & Telegram group
+5. Click "❌ NO" → Cancels sharing
 
 **Features:**
 • ✅ Auto language detection
@@ -407,7 +407,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • ✅ Twitter threads for long messages
 • ✅ Forwarded messages support
 • ✅ Images with captions support
-• ✅ Detailed posting confirmations
+• ✅ Inline buttons for easy confirmation
 
 **Just send English text and I'll handle the rest! 🚀**
     """
@@ -438,31 +438,34 @@ Ready to translate! 🌐
 
     await update.message.reply_text(status_message, parse_mode=ParseMode.MARKDOWN)
 
-async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle YES/NO confirmation for sharing"""
-    text = update.message.text.strip().upper()
+async def handle_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle button clicks for confirmation"""
+    query = update.callback_query
     user_id = update.effective_user.id
     
-    logger.info(f"👤 User {user_id} responded: {text}")
+    logger.info(f"🔘 User {user_id} clicked button: {query.data}")
     
-    if text in ['SÍ', 'SI', 'YES', 'Y']:
-        # Obtener traducción guardada
+    # Answer the callback query to remove loading state
+    await query.answer()
+    
+    if query.data == "confirm_share":
+        # User confirmed sharing
         translation = context.user_data.get('pending_translation')
         
         if not translation:
             logger.warning(f"⚠️ No pending translation for user {user_id}")
-            await update.message.reply_text("❌ No hay traducción pendiente.")
+            await query.edit_message_text("❌ No hay traducción pendiente.")
             return
         
         logger.info(f"📤 User {user_id} confirmed sharing. Starting distribution...")
-        processing_msg = await update.message.reply_text("📤 Compartiendo...")
+        await query.edit_message_text("📤 Compartiendo...")
         
-        # Postear en ambas plataformas
+        # Post to both platforms
         logger.info("🚀 Starting parallel posting to Twitter and Telegram...")
         twitter_result = await translation_bot.post_to_twitter(translation)
         telegram_result = await translation_bot.post_to_telegram(context.bot, translation)
         
-        # Crear mensaje de confirmación detallado
+        # Create detailed confirmation message
         confirmation_parts = []
         
         if twitter_result["success"]:
@@ -489,15 +492,16 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         final_message = "✅ **Resultados:**\n\n" + "\n".join(confirmation_parts)
         
-        await processing_msg.edit_text(final_message, parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(final_message, parse_mode=ParseMode.MARKDOWN)
         logger.info(f"✅ Sharing process completed for user {user_id}")
         
-        # Limpiar datos guardados
+        # Clear stored data
         context.user_data.clear()
         
-    elif text in ['NO', 'N']:
+    elif query.data == "deny_share":
+        # User denied sharing
         logger.info(f"❌ User {user_id} cancelled sharing")
-        await update.message.reply_text("❌ Compartición cancelada.")
+        await query.edit_message_text("❌ Compartición cancelada.")
         context.user_data.clear()
 
 async def handle_auto_translation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -534,14 +538,8 @@ async def handle_auto_translation(update: Update, context: ContextTypes.DEFAULT_
         logger.info("⏭️ Command detected - skipping auto-translation")
         return
         
-    if len(text) < 10:
+    if len(text) < 5:
         logger.info("⏭️ Message too short - skipping auto-translation")
-        return
-
-    # Skip if user is responding to confirmation
-    if text.upper() in ['SÍ', 'SI', 'YES', 'Y', 'NO', 'N']:
-        logger.info("🔄 Confirmation response detected - handling confirmation")
-        await handle_confirmation(update, context)
         return
 
     try:
@@ -565,13 +563,23 @@ async def handle_auto_translation(update: Update, context: ContextTypes.DEFAULT_
         if translation:
             # Store for later use
             context.user_data['pending_translation'] = translation
+            context.user_data['original_text'] = text
             logger.info(f"💾 Translation stored for user {user_id}")
             
-            # Show ONLY the translation + confirmation question
-            response = f"{translation}\n\n¿Estás listo para compartir? Responde **SÍ** o **NO**"
+            # Create inline keyboard with buttons
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ SÍ, Compartir", callback_data="confirm_share"),
+                    InlineKeyboardButton("❌ NO, Cancelar", callback_data="deny_share")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await processing_msg.edit_text(response, parse_mode=ParseMode.MARKDOWN)
-            logger.info(f"✅ Translation presented to user {user_id}")
+            # Show ONLY the translation + buttons
+            response = f"{translation}\n\n¿Estás listo para compartir?"
+            
+            await processing_msg.edit_text(response, reply_markup=reply_markup)
+            logger.info(f"✅ Translation presented to user {user_id} with buttons")
         else:
             logger.error("❌ Translation failed")
             await processing_msg.edit_text("❌ Error en la traducción.")
@@ -596,7 +604,10 @@ def main():
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("status", status_command))
         
-        # AUTO-TRANSLATION HANDLER (no commands needed!)
+        # BUTTON CALLBACK HANDLER (NEW!)
+        application.add_handler(CallbackQueryHandler(handle_button_callback))
+        
+        # AUTO-TRANSLATION HANDLER
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_auto_translation))
         
         application.add_error_handler(error_handler)
