@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  telegram-bot:
+    build: .
+    container_name: telegram-translation-bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TWITTER_API_KEY=${TWITTER_API_KEY}
+      - TWITTER_API_SECRET=${TWITTER_API_SECRET}
+      - DEFAULT_TARGET_LANGUAGE=en
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    env_file:
+      - .env
+    networks:
+      - bot-network
+
+  # Optional: Redis for caching (uncomment if needed)
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: telegram-bot-redis
+  #   restart: unless-stopped
+  #   volumes:
+  #     - redis_data:/data
+  #   networks:
+  #     - bot-network
+
+  # Optional: PostgreSQL database (uncomment if needed)
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: telegram-bot-postgres
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_DB: telegram_bot
+  #     POSTGRES_USER: bot_user
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   networks:
+  #     - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  postgres_data:
