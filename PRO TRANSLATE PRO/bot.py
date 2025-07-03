@@ -1,4 +1,4 @@
-Copy#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Telegram Translation Bot - Complete Version with Inline Buttons
 Auto-translates English to Spanish and posts to Twitter + Telegram group
