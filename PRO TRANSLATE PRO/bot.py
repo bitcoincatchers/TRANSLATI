@@ -43,20 +43,16 @@ class TranslationBot:
             self.openai_client = openai.OpenAI(api_key=self.settings.OPENAI_API_KEY)
             logger.info("✅ OpenAI API initialized")
 
-            # Setup Twitter API
+            # Setup Twitter API v2 (NO USES IMGHDR)
             if self.settings.ENABLE_TWITTER_SHARING:
-                auth = tweepy.OAuthHandler(
-                    self.settings.TWITTER_API_KEY,
-                    self.settings.TWITTER_API_SECRET
+                self.twitter_client = tweepy.Client(
+                    consumer_key=self.settings.TWITTER_API_KEY,
+                    consumer_secret=self.settings.TWITTER_API_SECRET,
+                    wait_on_rate_limit=True
                 )
-                auth.set_access_token(
-                    self.settings.TWITTER_ACCESS_TOKEN,
-                    self.settings.TWITTER_ACCESS_TOKEN_SECRET
-                )
-                self.twitter_api = tweepy.API(auth, wait_on_rate_limit=True)
-                logger.info("✅ Twitter API initialized")
+                logger.info("✅ Twitter API v2 initialized")
             else:
-                self.twitter_api = None
+                self.twitter_client = None
                 logger.info("ℹ️ Twitter sharing disabled")
 
         except Exception as e:
@@ -91,7 +87,8 @@ class TranslationBot:
             target_lang_name = lang_names.get(target_lang, target_lang.upper())
 
             prompt = f"""Translate the following text to {target_lang_name}. 
-            Provide only the translation, no explanations or additional text.
+            Make it engaging and natural, not just literal translation.
+            Add some personality while keeping the original meaning.
 
             Text to translate: {clean_input}"""
 
@@ -99,11 +96,11 @@ class TranslationBot:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": f"You are a professional translator. Translate text to {target_lang_name} accurately and naturally."},
+                    {"role": "system", "content": f"You are an expert translator who creates engaging, culturally-aware {target_lang_name} translations."},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=1000,
-                temperature=0.3
+                temperature=0.7
             )
 
             translation = response.choices[0].message.content.strip()
@@ -116,7 +113,7 @@ class TranslationBot:
 
     async def post_to_twitter(self, text: str) -> bool:
         """
-        Post translated text to Twitter
+        Post translated text to Twitter using v2 API
 
         Args:
             text (str): Text to post
@@ -124,7 +121,7 @@ class TranslationBot:
         Returns:
             bool: True if successful, False otherwise
         """
-        if not self.twitter_api or not self.settings.ENABLE_TWITTER_SHARING:
+        if not self.twitter_client or not self.settings.ENABLE_TWITTER_SHARING:
             return False
 
         try:
@@ -136,9 +133,9 @@ class TranslationBot:
             if len(tweet_text) > 280:
                 tweet_text = tweet_text[:275] + "..."
 
-            # Post tweet
-            tweet = self.twitter_api.update_status(tweet_text)
-            logger.info(f"✅ Posted to Twitter: {tweet.id}")
+            # Post tweet using v2 API
+            response = self.twitter_client.create_tweet(text=tweet_text)
+            logger.info(f"✅ Posted to Twitter: {response.data['id']}")
             return True
 
         except Exception as e:
@@ -356,7 +353,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **APIs:**
 • OpenAI: {'✅ Connected' if translation_bot.openai_client else '❌ Error'}
-• Twitter: {'✅ Connected' if translation_bot.twitter_api else '❌ Disabled'}
+• Twitter: {'✅ Connected' if translation_bot.twitter_client else '❌ Disabled'}
 
 **Settings:**
 • Auto-detect: ✅ Enabled
