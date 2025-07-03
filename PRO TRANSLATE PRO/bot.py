@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Telegram Translation Bot - Auto Translation with Twitter Threads
+Telegram Translation Bot - Fixed Version
+Auto-translates English to Spanish and posts to Twitter + Telegram group
 """
 
 import asyncio
@@ -54,11 +55,19 @@ class Settings:
         # Bot Configuration
         self.ENABLE_TWITTER_SHARING = os.getenv('ENABLE_TWITTER_SHARING', 'true').lower() == 'true'
         
+        # Log configuration for debugging
+        logger.info(f"🔧 Config loaded:")
+        logger.info(f"   Telegram Bot Token: {'✅ Set' if self.TELEGRAM_BOT_TOKEN else '❌ Missing'}")
+        logger.info(f"   Telegram Group ID: {self.TELEGRAM_GROUP_ID}")
+        logger.info(f"   OpenAI API Key: {'✅ Set' if self.OPENAI_API_KEY else '❌ Missing'}")
+        logger.info(f"   Twitter API Key: {'✅ Set' if self.TWITTER_API_KEY else '❌ Missing'}")
+        logger.info(f"   Twitter Sharing: {'✅ Enabled' if self.ENABLE_TWITTER_SHARING else '❌ Disabled'}")
+        
         # Validate required settings
         self._validate_settings()
     
     def _validate_settings(self):
-        """Validate that required settings are present"""
+        """Validate that all required settings are present"""
         required_settings = [
             ('TELEGRAM_BOT_TOKEN', self.TELEGRAM_BOT_TOKEN),
             ('OPENAI_API_KEY', self.OPENAI_API_KEY),
@@ -82,11 +91,13 @@ def detect_language(text: str) -> Optional[str]:
             return None
         
         detected_lang = detect(clean_text)
+        logger.info(f"🔍 Language detected: {detected_lang} for text: {text[:30]}...")
         return detected_lang
-    except LangDetectException:
+    except LangDetectException as e:
+        logger.warning(f"❌ Language detection failed (LangDetectException): {e}")
         return None
     except Exception as e:
-        logger.warning(f"Language detection failed: {e}")
+        logger.warning(f"❌ Language detection failed: {e}")
         return None
 
 def split_long_message(text: str, max_length: int = 4000) -> List[str]:
@@ -192,17 +203,29 @@ class TranslationBot:
             self.openai_client = openai.OpenAI(api_key=self.settings.OPENAI_API_KEY)
             logger.info("✅ OpenAI API initialized")
 
-            # Setup Twitter API v2
-            if self.settings.ENABLE_TWITTER_SHARING:
-                self.twitter_client = tweepy.Client(
-                    consumer_key=self.settings.TWITTER_API_KEY,
-                    consumer_secret=self.settings.TWITTER_API_SECRET,
-                    wait_on_rate_limit=True
-                )
-                logger.info("✅ Twitter API v2 initialized")
+            # Setup Twitter API v2 with verbose logging
+            if self.settings.ENABLE_TWITTER_SHARING and self.settings.TWITTER_API_KEY and self.settings.TWITTER_API_SECRET:
+                try:
+                    self.twitter_client = tweepy.Client(
+                        consumer_key=self.settings.TWITTER_API_KEY,
+                        consumer_secret=self.settings.TWITTER_API_SECRET,
+                        wait_on_rate_limit=True
+                    )
+                    logger.info("✅ Twitter API v2 initialized successfully")
+                    
+                    # Test Twitter connection
+                    try:
+                        me = self.twitter_client.get_me()
+                        logger.info(f"✅ Twitter connection verified - User: {me.data.username}")
+                    except Exception as e:
+                        logger.error(f"⚠️ Twitter connection test failed: {e}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ Twitter API setup failed: {e}")
+                    self.twitter_client = None
             else:
                 self.twitter_client = None
-                logger.info("ℹ️ Twitter sharing disabled")
+                logger.info("ℹ️ Twitter sharing disabled (missing credentials or disabled)")
 
         except Exception as e:
             logger.error(f"❌ API setup error: {e}")
@@ -212,6 +235,7 @@ class TranslationBot:
         """Translate text using OpenAI GPT-4 with subtle emoji enhancement"""
         try:
             clean_input = clean_text(text)
+            logger.info(f"🔄 Starting translation for: {clean_input[:50]}...")
 
             prompt = f"""Translate the following English text to Spanish. 
             Make it engaging and natural, not just literal translation.
@@ -233,7 +257,8 @@ class TranslationBot:
             )
 
             translation = response.choices[0].message.content.strip()
-            logger.info(f"✅ Translation completed: {len(text)} chars -> {len(translation)} chars")
+            logger.info(f"✅ Translation completed successfully: {len(text)} chars -> {len(translation)} chars")
+            logger.info(f"📝 Translation result: {translation[:100]}...")
             return translation
 
         except Exception as e:
@@ -244,27 +269,38 @@ class TranslationBot:
         """Post to Twitter as single tweet or thread"""
         result = {"success": False, "tweets": 0, "thread": False, "error": None}
         
-        if not self.twitter_client or not self.settings.ENABLE_TWITTER_SHARING:
-            result["error"] = "Twitter disabled"
+        logger.info(f"🐦 Attempting to post to Twitter: {text[:50]}...")
+        
+        if not self.twitter_client:
+            result["error"] = "Twitter client not initialized"
+            logger.error("❌ Twitter client not available")
+            return result
+
+        if not self.settings.ENABLE_TWITTER_SHARING:
+            result["error"] = "Twitter sharing disabled"
+            logger.warning("⚠️ Twitter sharing is disabled")
             return result
 
         try:
             # Check if we need a thread
             if len(text) <= 270:
                 # Single tweet
+                logger.info("📤 Posting single tweet...")
                 response = self.twitter_client.create_tweet(text=text)
                 result["success"] = True
                 result["tweets"] = 1
                 result["thread"] = False
-                logger.info(f"✅ Posted single tweet: {response.data['id']}")
+                logger.info(f"✅ Posted single tweet successfully: {response.data['id']}")
             else:
                 # Twitter thread
+                logger.info("📤 Posting Twitter thread...")
                 chunks = split_twitter_thread(text, 270)
                 tweet_ids = []
                 
                 # Post first tweet
                 first_response = self.twitter_client.create_tweet(text=f"{chunks[0]} 🧵")
                 tweet_ids.append(first_response.data['id'])
+                logger.info(f"✅ Posted first tweet of thread: {first_response.data['id']}")
                 
                 # Post remaining tweets as replies
                 for i, chunk in enumerate(chunks[1:], 2):
@@ -273,11 +309,12 @@ class TranslationBot:
                         in_reply_to_tweet_id=tweet_ids[-1]
                     )
                     tweet_ids.append(response.data['id'])
+                    logger.info(f"✅ Posted tweet {i}/{len(chunks)}: {response.data['id']}")
                 
                 result["success"] = True
                 result["tweets"] = len(chunks)
                 result["thread"] = True
-                logger.info(f"✅ Posted Twitter thread: {len(chunks)} tweets")
+                logger.info(f"✅ Posted complete Twitter thread: {len(chunks)} tweets")
             
             return result
 
@@ -290,8 +327,11 @@ class TranslationBot:
         """Post translation to Telegram group"""
         result = {"success": False, "messages": 0, "error": None}
         
+        logger.info(f"📱 Attempting to post to Telegram group {self.settings.TELEGRAM_GROUP_ID}: {text[:50]}...")
+        
         try:
             message_chunks = split_long_message(text, 4000)
+            logger.info(f"📝 Message split into {len(message_chunks)} chunks")
 
             for i, chunk in enumerate(message_chunks):
                 if len(message_chunks) > 1:
@@ -300,19 +340,24 @@ class TranslationBot:
                 else:
                     formatted_chunk = chunk
                 
-                await bot.send_message(
+                logger.info(f"📤 Sending message {i+1}/{len(message_chunks)} to group...")
+                
+                sent_message = await bot.send_message(
                     chat_id=self.settings.TELEGRAM_GROUP_ID,
                     text=formatted_chunk,
                     parse_mode=None  # No markdown to avoid formatting issues
                 )
+                
+                logger.info(f"✅ Message {i+1} sent successfully: {sent_message.message_id}")
 
             result["success"] = True
             result["messages"] = len(message_chunks)
-            logger.info(f"✅ Posted to Telegram group: {len(message_chunks)} messages")
+            logger.info(f"✅ All {len(message_chunks)} messages posted to Telegram group successfully")
             return result
 
         except Exception as e:
             logger.error(f"❌ Telegram posting error: {e}")
+            logger.error(f"❌ Error details: {type(e).__name__}: {str(e)}")
             result["error"] = str(e)
             return result
 
@@ -321,6 +366,8 @@ translation_bot = TranslationBot()
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
+    logger.info(f"👤 User {update.effective_user.username} started the bot")
+    
     welcome_message = """
 🤖 **Welcome to Auto Translation Bot!**
 
@@ -358,7 +405,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • ✅ Auto language detection
 • ✅ GPT-4 powered translation
 • ✅ Twitter threads for long messages
-• ✅ Confirmation before sharing
+• ✅ Forwarded messages support
+• ✅ Images with captions support
 • ✅ Detailed posting confirmations
 
 **Just send English text and I'll handle the rest! 🚀**
@@ -373,12 +421,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **APIs:**
 • OpenAI: {'✅ Connected' if translation_bot.openai_client else '❌ Error'}
-• Twitter: {'✅ Connected' if translation_bot.twitter_client else '❌ Disabled'}
+• Twitter: {'✅ Connected' if translation_bot.twitter_client else '❌ Disabled/Error'}
 
 **Settings:**
 • Auto-detect: ✅ Enabled
 • Target Language: Spanish (es)
 • Twitter Sharing: {'✅ Enabled' if translation_bot.settings.ENABLE_TWITTER_SHARING else '❌ Disabled'}
+• Telegram Group: {translation_bot.settings.TELEGRAM_GROUP_ID}
 
 **Stats:**
 • Uptime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -392,18 +441,24 @@ Ready to translate! 🌐
 async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle YES/NO confirmation for sharing"""
     text = update.message.text.strip().upper()
+    user_id = update.effective_user.id
+    
+    logger.info(f"👤 User {user_id} responded: {text}")
     
     if text in ['SÍ', 'SI', 'YES', 'Y']:
         # Obtener traducción guardada
         translation = context.user_data.get('pending_translation')
         
         if not translation:
+            logger.warning(f"⚠️ No pending translation for user {user_id}")
             await update.message.reply_text("❌ No hay traducción pendiente.")
             return
         
+        logger.info(f"📤 User {user_id} confirmed sharing. Starting distribution...")
         processing_msg = await update.message.reply_text("📤 Compartiendo...")
         
         # Postear en ambas plataformas
+        logger.info("🚀 Starting parallel posting to Twitter and Telegram...")
         twitter_result = await translation_bot.post_to_twitter(translation)
         telegram_result = await translation_bot.post_to_telegram(context.bot, translation)
         
@@ -413,55 +468,93 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         if twitter_result["success"]:
             if twitter_result["thread"]:
                 confirmation_parts.append(f"🐦 **Twitter:** Publicado como hilo ({twitter_result['tweets']} tweets)")
+                logger.info(f"✅ Twitter thread posted successfully ({twitter_result['tweets']} tweets)")
             else:
                 confirmation_parts.append(f"🐦 **Twitter:** Publicado como tweet único")
+                logger.info("✅ Twitter single tweet posted successfully")
         else:
             confirmation_parts.append(f"❌ **Twitter:** Error - {twitter_result.get('error', 'Unknown')}")
+            logger.error(f"❌ Twitter posting failed: {twitter_result.get('error', 'Unknown')}")
         
         if telegram_result["success"]:
             if telegram_result["messages"] > 1:
                 confirmation_parts.append(f"📱 **Telegram:** Enviado en {telegram_result['messages']} mensajes")
+                logger.info(f"✅ Telegram messages posted successfully ({telegram_result['messages']} messages)")
             else:
                 confirmation_parts.append(f"📱 **Telegram:** Mensaje enviado correctamente")
+                logger.info("✅ Telegram single message posted successfully")
         else:
             confirmation_parts.append(f"❌ **Telegram:** Error - {telegram_result.get('error', 'Unknown')}")
+            logger.error(f"❌ Telegram posting failed: {telegram_result.get('error', 'Unknown')}")
         
         final_message = "✅ **Resultados:**\n\n" + "\n".join(confirmation_parts)
         
         await processing_msg.edit_text(final_message, parse_mode=ParseMode.MARKDOWN)
+        logger.info(f"✅ Sharing process completed for user {user_id}")
         
         # Limpiar datos guardados
         context.user_data.clear()
         
     elif text in ['NO', 'N']:
+        logger.info(f"❌ User {user_id} cancelled sharing")
         await update.message.reply_text("❌ Compartición cancelada.")
         context.user_data.clear()
 
 async def handle_auto_translation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle automatic translation of English messages"""
-    if not update.message or not update.message.text:
+    """Handle automatic translation of English messages (including forwarded with images)"""
+    if not update.message:
         return
 
-    text = update.message.text.strip()
+    user_id = update.effective_user.id
+    logger.info(f"📨 Received message from user {user_id}")
+
+    # Extract text from different message types
+    text = None
+    
+    # Check if it's a forwarded message
+    if update.message.forward_from or update.message.forward_from_chat:
+        logger.info("📨 Forwarded message detected")
+    
+    # Get text from various sources
+    if update.message.text:
+        text = update.message.text.strip()
+        logger.info(f"📝 Text message: {text[:50]}...")
+    elif update.message.caption:
+        # Message with image/video + caption
+        text = update.message.caption.strip()
+        logger.info(f"📸 Media with caption: {text[:50]}...")
+    
+    # If no text found, skip
+    if not text:
+        logger.info("⏭️ No text content found in message - skipping")
+        return
 
     # Skip commands and very short messages
-    if text.startswith('/') or len(text) < 10:
+    if text.startswith('/'):
+        logger.info("⏭️ Command detected - skipping auto-translation")
+        return
+        
+    if len(text) < 10:
+        logger.info("⏭️ Message too short - skipping auto-translation")
         return
 
     # Skip if user is responding to confirmation
     if text.upper() in ['SÍ', 'SI', 'YES', 'Y', 'NO', 'N']:
+        logger.info("🔄 Confirmation response detected - handling confirmation")
         await handle_confirmation(update, context)
         return
 
     try:
         # Detect language
+        logger.info("🔍 Starting language detection...")
         detected_lang = detect_language(text)
         
         # Only process English messages
         if detected_lang != 'en':
+            logger.info(f"⏭️ Non-English message detected ({detected_lang}) - skipping translation")
             return  # Silent skip for non-English
         
-        logger.info(f"🔍 Auto-translating English message: {text[:50]}...")
+        logger.info(f"🇺🇸 English message confirmed - starting translation process")
         
         # Show processing message
         processing_msg = await update.message.reply_text("🔄 Traduciendo automáticamente...")
@@ -472,24 +565,30 @@ async def handle_auto_translation(update: Update, context: ContextTypes.DEFAULT_
         if translation:
             # Store for later use
             context.user_data['pending_translation'] = translation
+            logger.info(f"💾 Translation stored for user {user_id}")
             
             # Show ONLY the translation + confirmation question
             response = f"{translation}\n\n¿Estás listo para compartir? Responde **SÍ** o **NO**"
             
             await processing_msg.edit_text(response, parse_mode=ParseMode.MARKDOWN)
+            logger.info(f"✅ Translation presented to user {user_id}")
         else:
+            logger.error("❌ Translation failed")
             await processing_msg.edit_text("❌ Error en la traducción.")
 
     except Exception as e:
-        logger.error(f"Auto-translation error: {e}")
+        logger.error(f"❌ Auto-translation error: {e}")
+        logger.error(f"❌ Error type: {type(e).__name__}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle errors"""
-    logger.error(f"Update {update} caused error {context.error}")
+    logger.error(f"❌ Update {update} caused error {context.error}")
 
 def main():
     """Main function to run the bot"""
     try:
+        logger.info("🚀 Initializing Telegram Translation Bot...")
+        
         application = Application.builder().token(translation_bot.settings.TELEGRAM_BOT_TOKEN).build()
 
         # Add handlers
@@ -508,6 +607,7 @@ def main():
         logger.info(f"📱 Group ID: {translation_bot.settings.TELEGRAM_GROUP_ID}")
         logger.info(f"🌐 Auto-translation: English → Spanish")
         logger.info(f"🐦 Twitter: {'Enabled' if translation_bot.settings.ENABLE_TWITTER_SHARING else 'Disabled'}")
+        logger.info("✅ Bot is ready to process messages!")
 
         application.run_polling(drop_pending_updates=True)
 
