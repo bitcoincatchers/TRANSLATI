@@ -23,7 +23,7 @@ from langdetect import detect
 from langdetect.lang_detect_exception import LangDetectException
 
 # Import your settings
-from settings import settings
+from config.settings import settings
 
 # Load environment variables
 load_dotenv()
