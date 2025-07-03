@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram Translation Bot - Main Application
+Telegram Translation Bot - Standalone Version
 Detects English messages, translates to Spanish, and posts to Twitter/Telegram
 """
 
@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import sys
+import re
 from datetime import datetime
 from typing import Optional, List
 
@@ -16,16 +17,126 @@ import tweepy
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
+from dotenv import load_dotenv
+from langdetect import detect
+from langdetect.lang_detect_exception import LangDetectException
 
-# Import our utilities
-from utils.helpers import (
-    setup_logging, detect_language, split_long_message, 
-    clean_text, format_translation_response, is_valid_language_code
+# Load environment variables
+load_dotenv()
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
 )
-from config.settings import Settings
+logger = logging.getLogger(__name__)
 
-# Initialize logging
-logger = setup_logging()
+class Settings:
+    """Bot configuration settings"""
+    
+    def __init__(self):
+        """Initialize settings from environment variables"""
+        
+        # Telegram Configuration
+        self.TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+        self.TELEGRAM_GROUP_ID = os.getenv('TELEGRAM_GROUP_ID')
+        
+        # OpenAI Configuration
+        self.OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+        
+        # Twitter Configuration
+        self.TWITTER_API_KEY = os.getenv('TWITTER_API_KEY')
+        self.TWITTER_API_SECRET = os.getenv('TWITTER_API_SECRET')
+        
+        # Bot Configuration
+        self.ENABLE_TWITTER_SHARING = os.getenv('ENABLE_TWITTER_SHARING', 'true').lower() == 'true'
+        
+        # Validate required settings
+        self._validate_settings()
+    
+    def _validate_settings(self):
+        """Validate that required settings are present"""
+        required_settings = [
+            ('TELEGRAM_BOT_TOKEN', self.TELEGRAM_BOT_TOKEN),
+            ('OPENAI_API_KEY', self.OPENAI_API_KEY),
+            ('TELEGRAM_GROUP_ID', self.TELEGRAM_GROUP_ID)
+        ]
+        
+        missing_settings = []
+        for name, value in required_settings:
+            if not value:
+                missing_settings.append(name)
+        
+        if missing_settings:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing_settings)}")
+
+def detect_language(text: str) -> Optional[str]:
+    """Detect the language of the given text"""
+    try:
+        # Clean text for better detection
+        clean_text = re.sub(r'[^\w\s]', '', text)
+        if len(clean_text.strip()) < 3:
+            return None
+        
+        detected_lang = detect(clean_text)
+        return detected_lang
+    except LangDetectException:
+        return None
+    except Exception as e:
+        logger.warning(f"Language detection failed: {e}")
+        return None
+
+def split_long_message(text: str, max_length: int = 4000) -> List[str]:
+    """Split long messages into chunks that fit Telegram's limits"""
+    if len(text) <= max_length:
+        return [text]
+    
+    chunks = []
+    current_chunk = ""
+    
+    # Split by sentences first
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    
+    for sentence in sentences:
+        if len(current_chunk + sentence) <= max_length:
+            current_chunk += sentence + " "
+        else:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = sentence + " "
+            else:
+                # If single sentence is too long, split by words
+                words = sentence.split()
+                temp_chunk = ""
+                for word in words:
+                    if len(temp_chunk + word) <= max_length:
+                        temp_chunk += word + " "
+                    else:
+                        if temp_chunk:
+                            chunks.append(temp_chunk.strip())
+                            temp_chunk = word + " "
+                        else:
+                            # Force split if single word is too long
+                            chunks.append(word[:max_length])
+                            temp_chunk = word[max_length:] + " "
+                current_chunk = temp_chunk
+    
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    
+    return chunks
+
+def clean_text(text: str) -> str:
+    """Clean text for better translation"""
+    # Remove excessive whitespace
+    text = re.sub(r'\s+', ' ', text)
+    # Remove special characters that might interfere
+    text = re.sub(r'[^\w\s.,!?;:()\-\'"]', '', text)
+    return text.strip()
 
 class TranslationBot:
     """Main Translation Bot Class"""
@@ -43,7 +154,7 @@ class TranslationBot:
             self.openai_client = openai.OpenAI(api_key=self.settings.OPENAI_API_KEY)
             logger.info("✅ OpenAI API initialized")
 
-            # Setup Twitter API v2 (NO USES IMGHDR)
+            # Setup Twitter API v2
             if self.settings.ENABLE_TWITTER_SHARING:
                 self.twitter_client = tweepy.Client(
                     consumer_key=self.settings.TWITTER_API_KEY,
@@ -60,43 +171,20 @@ class TranslationBot:
             raise
 
     async def translate_text(self, text: str, target_lang: str = "es") -> Optional[str]:
-        """
-        Translate text using OpenAI GPT-4
-
-        Args:
-            text (str): Text to translate
-            target_lang (str): Target language code
-
-        Returns:
-            str: Translated text or None if failed
-        """
+        """Translate text using OpenAI GPT-4"""
         try:
-            # Clean the text
             clean_input = clean_text(text)
 
-            # Create translation prompt
-            lang_names = {
-                'es': 'Spanish',
-                'en': 'English',
-                'fr': 'French',
-                'de': 'German',
-                'it': 'Italian',
-                'pt': 'Portuguese'
-            }
-
-            target_lang_name = lang_names.get(target_lang, target_lang.upper())
-
-            prompt = f"""Translate the following text to {target_lang_name}. 
+            prompt = f"""Translate the following English text to Spanish. 
             Make it engaging and natural, not just literal translation.
             Add some personality while keeping the original meaning.
 
             Text to translate: {clean_input}"""
 
-            # Call OpenAI API
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": f"You are an expert translator who creates engaging, culturally-aware {target_lang_name} translations."},
+                    {"role": "system", "content": "You are an expert translator who creates engaging, culturally-aware Spanish translations."},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=1000,
@@ -112,28 +200,17 @@ class TranslationBot:
             return None
 
     async def post_to_twitter(self, text: str) -> bool:
-        """
-        Post translated text to Twitter using v2 API
-
-        Args:
-            text (str): Text to post
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
+        """Post translated text to Twitter using v2 API"""
         if not self.twitter_client or not self.settings.ENABLE_TWITTER_SHARING:
             return False
 
         try:
-            # Prepare tweet text
             timestamp = datetime.now().strftime("%H:%M")
             tweet_text = f"🌐 Auto-Translation ({timestamp})\n\n{text}"
 
-            # Split if too long for Twitter
             if len(tweet_text) > 280:
                 tweet_text = tweet_text[:275] + "..."
 
-            # Post tweet using v2 API
             response = self.twitter_client.create_tweet(text=tweet_text)
             logger.info(f"✅ Posted to Twitter: {response.data['id']}")
             return True
@@ -143,19 +220,8 @@ class TranslationBot:
             return False
 
     async def post_to_telegram(self, bot: Bot, text: str, original_text: str = None) -> bool:
-        """
-        Post translation to Telegram group
-
-        Args:
-            bot (Bot): Telegram bot instance
-            text (str): Translated text
-            original_text (str): Original text for context
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
+        """Post translation to Telegram group"""
         try:
-            # Format message
             if original_text:
                 message = f"🌐 **Auto-Translation**\n\n"
                 message += f"**Original (EN):** {original_text[:100]}{'...' if len(original_text) > 100 else ''}\n\n"
@@ -163,10 +229,8 @@ class TranslationBot:
             else:
                 message = f"🌐 **Translation**\n\n{text}"
 
-            # Split long messages
             message_chunks = split_long_message(message, 4000)
 
-            # Send to group
             for chunk in message_chunks:
                 await bot.send_message(
                     chat_id=self.settings.TELEGRAM_GROUP_ID,
@@ -182,16 +246,7 @@ class TranslationBot:
             return False
 
     async def process_message(self, text: str, bot: Bot) -> dict:
-        """
-        Process a message: detect language, translate, and post
-
-        Args:
-            text (str): Message text
-            bot (Bot): Telegram bot instance
-
-        Returns:
-            dict: Processing results
-        """
+        """Process a message: detect language, translate, and post"""
         results = {
             'detected_language': None,
             'translation': None,
@@ -287,11 +342,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • ✅ Smart message splitting
 • ✅ Error handling
 
-**Supported Languages:**
-English → Spanish (primary)
-Also supports: French, German, Italian, Portuguese
-
-Need help? Just send a message! 🚀
+Ready to translate! 🚀
     """
 
     await update.message.reply_text(help_message, parse_mode=ParseMode.MARKDOWN)
@@ -303,17 +354,13 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = ' '.join(context.args)
-
-    # Show processing message
     processing_msg = await update.message.reply_text("🔄 Translating...")
 
     try:
-        # Translate
         translation = await translation_bot.translate_text(text, 'es')
 
         if translation:
-            # Format response
-            response = format_translation_response(text, translation, 'en', 'es')
+            response = f"🌐 **Translation**\n\n**Original (EN):** {text}\n\n**Spanish:** {translation}"
             await processing_msg.edit_text(response, parse_mode=ParseMode.MARKDOWN)
         else:
             await processing_msg.edit_text("❌ Translation failed. Please try again.")
@@ -338,9 +385,7 @@ async def detect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         lang_name = lang_names.get(detected_lang, detected_lang.upper())
 
-        response = f"🔍 **Language Detection**\n\n"
-        response += f"**Text:** {text}\n"
-        response += f"**Detected:** {lang_name} ({detected_lang})"
+        response = f"🔍 **Language Detection**\n\n**Text:** {text}\n**Detected:** {lang_name} ({detected_lang})"
     else:
         response = f"❌ Could not detect language for: {text}"
 
@@ -376,23 +421,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
 
-    # Skip commands
-    if text.startswith('/'):
-        return
-
-    # Skip short messages
-    if len(text) < 10:
+    # Skip commands and short messages
+    if text.startswith('/') or len(text) < 10:
         return
 
     try:
-        # Process message
         results = await translation_bot.process_message(text, context.bot)
 
-        # Send feedback to user
         if results['error']:
             if 'Not English' in results['error']:
-                # Silent skip for non-English messages
-                return
+                return  # Silent skip
             else:
                 await update.message.reply_text(f"❌ {results['error']}")
         elif results['translation']:
@@ -414,7 +452,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """Main function to run the bot"""
     try:
-        # Create application
         application = Application.builder().token(translation_bot.settings.TELEGRAM_BOT_TOKEN).build()
 
         # Add handlers
@@ -423,11 +460,7 @@ def main():
         application.add_handler(CommandHandler("translate", translate_command))
         application.add_handler(CommandHandler("detect", detect_command))
         application.add_handler(CommandHandler("status", status_command))
-
-        # Add message handler for auto-translation
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-        # Add error handler
         application.add_error_handler(error_handler)
 
         # Start bot
@@ -437,7 +470,6 @@ def main():
         logger.info(f"🌐 Target Language: Spanish")
         logger.info(f"🐦 Twitter: {'Enabled' if translation_bot.settings.ENABLE_TWITTER_SHARING else 'Disabled'}")
 
-        # Run the bot
         application.run_polling(drop_pending_updates=True)
 
     except Exception as e:
