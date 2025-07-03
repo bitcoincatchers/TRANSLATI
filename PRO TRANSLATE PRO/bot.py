@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram Translation Bot - FINAL VERSION
+Telegram Translation Bot - SELF-CONTAINED FINAL VERSION
 Auto-translates English to Spanish and posts to Twitter + Telegram group
 WORKS WITH FREE PLAN - 500 WRITES PER MONTH!
 """
@@ -22,22 +22,29 @@ from dotenv import load_dotenv
 from langdetect import detect
 from langdetect.lang_detect_exception import LangDetectException
 
-# Import your settings
-from config.settings import settings
-
 # Load environment variables
 load_dotenv()
 
 # Setup logging
 logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL),
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(settings.LOG_FILE),
+        logging.FileHandler('bot.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Direct environment variable loading (no external imports needed)
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_GROUP_ID = os.getenv('TELEGRAM_GROUP_ID') 
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+TWITTER_API_KEY = os.getenv('TWITTER_API_KEY')
+TWITTER_API_SECRET = os.getenv('TWITTER_API_SECRET')
+TWITTER_ACCESS_TOKEN = os.getenv('TWITTER_ACCESS_TOKEN')
+TWITTER_ACCESS_TOKEN_SECRET = os.getenv('TWITTER_ACCESS_TOKEN_SECRET')
+ENABLE_TWITTER_SHARING = os.getenv('ENABLE_TWITTER_SHARING', 'true').lower() == 'true'
 
 def detect_language(text: str) -> Optional[str]:
     """Detect the language of the given text"""
@@ -57,11 +64,8 @@ def detect_language(text: str) -> Optional[str]:
         logger.warning(f"Language detection failed: {e}")
         return None
 
-def split_long_message(text: str, max_length: int = None) -> List[str]:
+def split_long_message(text: str, max_length: int = 4000) -> List[str]:
     """Split long messages into chunks that fit Telegram's limits"""
-    if max_length is None:
-        max_length = settings.MAX_MESSAGE_LENGTH
-    
     if len(text) <= max_length:
         return [text]
     
@@ -152,28 +156,25 @@ class TranslationBot:
 
     def __init__(self):
         """Initialize the bot with all configurations"""
-        self.settings = settings
         self.setup_apis()
 
     def setup_apis(self):
         """Setup OpenAI and Twitter APIs"""
         try:
             # Setup OpenAI
-            openai.api_key = self.settings.OPENAI_API_KEY
-            self.openai_client = openai.OpenAI(api_key=self.settings.OPENAI_API_KEY)
+            openai.api_key = OPENAI_API_KEY
+            self.openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
             logger.info("✅ OpenAI API initialized")
 
             # Setup Twitter API using OAuth 1.0a
-            if self.settings.is_twitter_enabled():
+            if ENABLE_TWITTER_SHARING and all([TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_TOKEN_SECRET]):
                 try:
-                    twitter_creds = self.settings.get_twitter_credentials()
-                    
                     # Use OAuth 1.0a with all credentials
                     self.twitter_client = tweepy.Client(
-                        consumer_key=twitter_creds['api_key'],
-                        consumer_secret=twitter_creds['api_secret'],
-                        access_token=twitter_creds['access_token'],
-                        access_token_secret=twitter_creds['access_token_secret'],
+                        consumer_key=TWITTER_API_KEY,
+                        consumer_secret=TWITTER_API_SECRET,
+                        access_token=TWITTER_ACCESS_TOKEN,
+                        access_token_secret=TWITTER_ACCESS_TOKEN_SECRET,
                         wait_on_rate_limit=True
                     )
                     
@@ -202,20 +203,13 @@ class TranslationBot:
             logger.error(f"❌ API setup error: {e}")
             raise
 
-    async def translate_text(self, text: str, target_lang: str = None) -> Optional[str]:
+    async def translate_text(self, text: str, target_lang: str = "es") -> Optional[str]:
         """Translate text using OpenAI GPT-4 with subtle emoji enhancement"""
-        if target_lang is None:
-            target_lang = self.settings.DEFAULT_TARGET_LANGUAGE
-            
         try:
             clean_input = clean_text(text)
             logger.info(f"🔄 Starting translation for: {clean_input[:50]}...")
 
-            # Get target language name
-            supported_langs = self.settings.get_supported_languages()
-            target_lang_name = supported_langs.get(target_lang, 'Spanish')
-
-            prompt = f"""Translate the following English text to {target_lang_name}. 
+            prompt = f"""Translate the following English text to Spanish. 
             Make it engaging and natural, not just literal translation.
             Add some personality while keeping the original meaning.
             Add subtle emojis ONLY where they make sense and enhance the message.
@@ -227,7 +221,7 @@ class TranslationBot:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": f"You are an expert translator who creates engaging, culturally-aware {target_lang_name} translations with subtle emoji enhancements."},
+                    {"role": "system", "content": "You are an expert translator who creates engaging, culturally-aware Spanish translations with subtle emoji enhancements."},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=1000,
@@ -254,7 +248,7 @@ class TranslationBot:
             logger.error("❌ Twitter client not available")
             return result
 
-        if not self.settings.ENABLE_TWITTER_SHARING:
+        if not ENABLE_TWITTER_SHARING:
             result["error"] = "Twitter sharing disabled"
             logger.warning("⚠️ Twitter sharing is disabled")
             return result
@@ -307,7 +301,7 @@ class TranslationBot:
         """Post translation to Telegram group"""
         result = {"success": False, "messages": 0, "error": None}
         
-        logger.info(f"📱 Attempting to post to Telegram group {self.settings.TELEGRAM_GROUP_ID}: {text[:50]}...")
+        logger.info(f"📱 Attempting to post to Telegram group {TELEGRAM_GROUP_ID}: {text[:50]}...")
         
         try:
             message_chunks = split_long_message(text)
@@ -323,7 +317,7 @@ class TranslationBot:
                 logger.info(f"📤 Sending message {i+1}/{len(message_chunks)} to group...")
                 
                 sent_message = await bot.send_message(
-                    chat_id=self.settings.TELEGRAM_GROUP_ID,
+                    chat_id=TELEGRAM_GROUP_ID,
                     text=formatted_chunk,
                     parse_mode=None  # No markdown to avoid formatting issues
                 )
@@ -420,19 +414,20 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **Configuración:**
 • Auto-detección: ✅ Habilitada
-• Idioma objetivo: {settings.get_supported_languages().get(settings.DEFAULT_TARGET_LANGUAGE, 'Español')}
-• Compartir Twitter: {'✅ Habilitado (Plan GRATUITO)' if settings.ENABLE_TWITTER_SHARING else '❌ Deshabilitado'}
-• Grupo Telegram: {settings.TELEGRAM_GROUP_ID}
+• Idioma objetivo: Español
+• Compartir Twitter: {'✅ Habilitado (Plan GRATUITO)' if ENABLE_TWITTER_SHARING else '❌ Deshabilitado'}
+• Grupo Telegram: {TELEGRAM_GROUP_ID}
 
 **Configuración Twitter:**
-• Credenciales: {'✅ Configuradas' if settings.is_twitter_enabled() else '❌ Faltantes'}
+• API Key: {'✅ Set' if TWITTER_API_KEY else '❌ Missing'}
+• Access Token: {'✅ Set' if TWITTER_ACCESS_TOKEN else '❌ Missing'}
 • Plan: GRATUITO (500 writes/mes)
 • Modo: OAuth 1.0a
 
 **Estadísticas:**
 • Tiempo activo: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 • Estado: 🟢 En línea
-• Versión: FINAL con Config Completa
+• Versión: FINAL Self-Contained
 
 ¡Listo para traducir! 🌐
     """
@@ -466,7 +461,7 @@ Si este es un GRUPO y quieres que el bot postee aquí:
 4. ¡El bot posteará traducciones en este chat!
 
 **Nota:** Los IDs de grupo suelen ser números negativos.
-**Objetivo actual:** {settings.TELEGRAM_GROUP_ID}
+**Objetivo actual:** {TELEGRAM_GROUP_ID}
     """
     await update.message.reply_text(info, parse_mode=ParseMode.MARKDOWN)
 
@@ -629,7 +624,12 @@ def main():
     try:
         logger.info("🔥 Inicializando Bot de Traducción VERSIÓN FINAL...")
         
-        application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
+        # Validate required settings
+        if not all([TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, TELEGRAM_GROUP_ID]):
+            logger.error("❌ Missing required environment variables")
+            sys.exit(1)
+        
+        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
         # Add handlers
         application.add_handler(CommandHandler("start", start_command))
@@ -647,11 +647,11 @@ def main():
 
         # Start bot
         logger.info("🔥 Iniciando Bot de Traducción VERSIÓN FINAL...")
-        logger.info(f"🔑 Bot Token: {settings.TELEGRAM_BOT_TOKEN[:10]}...")
-        logger.info(f"📱 Group ID: {settings.TELEGRAM_GROUP_ID}")
-        logger.info(f"🌐 Auto-traducción: Inglés → {settings.get_supported_languages().get(settings.DEFAULT_TARGET_LANGUAGE, 'Español')}")
-        logger.info(f"🐦 Twitter: {'✅ OAuth 1.0a HABILITADO' if settings.ENABLE_TWITTER_SHARING else '❌ Deshabilitado'}")
-        logger.info("🔥 Versión: FINAL con settings.py - 500 writes/mes")
+        logger.info(f"🔑 Bot Token: {TELEGRAM_BOT_TOKEN[:10]}...")
+        logger.info(f"📱 Group ID: {TELEGRAM_GROUP_ID}")
+        logger.info("🌐 Auto-traducción: Inglés → Español")
+        logger.info(f"🐦 Twitter: {'✅ OAuth 1.0a HABILITADO' if ENABLE_TWITTER_SHARING else '❌ Deshabilitado'}")
+        logger.info("🔥 Versión: FINAL Self-Contained - 500 writes/mes")
         logger.info("✅ ¡Bot listo para procesar mensajes!")
 
         application.run_polling(drop_pending_updates=True)
